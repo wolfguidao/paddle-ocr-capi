@@ -12,6 +12,7 @@ use ocr_rs::{
     OriModel, OriOptions, OriPreprocessMode, PrecisionMode, RecModel, RecOptions,
 };
 use std::ffi::{CStr, CString};
+use std::path::Path;
 use std::ptr;
 use std::slice;
 
@@ -801,7 +802,7 @@ pub extern "C" fn ocr_ori_model_classify_file(
         }
     };
 
-    let image = match image::open(path) {
+    let image = match load_image_from_path(path) {
         Ok(img) => img,
         Err(e) => {
             set_last_error(format!("Failed to load image: {}", e));
@@ -1133,7 +1134,7 @@ pub extern "C" fn ocr_engine_recognize_file(
         }
     };
 
-    let image = match image::open(path) {
+    let image = match load_image_from_path(path) {
         Ok(img) => img,
         Err(e) => {
             set_last_error(format!("Failed to load image: {}", e));
@@ -1235,6 +1236,13 @@ pub extern "C" fn ocr_free_string(s: *mut c_char) {
 // 内部辅助函数
 // ============================================================================
 
+fn load_image_from_path(path: impl AsRef<Path>) -> image::ImageResult<DynamicImage> {
+    // Uploaded files can have an extension that does not match their encoded contents.
+    image::ImageReader::open(path)?
+        .with_guessed_format()?
+        .decode()
+}
+
 fn convert_ocr_results(results: Result<Vec<OcrResult_>, ocr_rs::OcrError>) -> OcrResultList {
     let empty_result = OcrResultList {
         items: ptr::null_mut(),
@@ -1297,4 +1305,29 @@ fn convert_ocr_results(results: Result<Vec<OcrResult_>, ocr_rs::OcrError>) -> Oc
 pub extern "C" fn ocr_version() -> *const c_char {
     static VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "\0");
     VERSION.as_ptr() as *const c_char
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn loads_image_by_content_when_extension_is_wrong() {
+        let image = DynamicImage::ImageRgb8(RgbImage::new(2, 3));
+        let mut png = Cursor::new(Vec::new());
+        image.write_to(&mut png, image::ImageFormat::Png).unwrap();
+
+        let path = std::env::temp_dir().join(format!(
+            "ocr-capi-mislabeled-png-{}.jpg",
+            std::process::id()
+        ));
+        std::fs::write(&path, png.into_inner()).unwrap();
+
+        let decoded = load_image_from_path(&path);
+        let _ = std::fs::remove_file(&path);
+
+        let decoded = decoded.expect("PNG content should override the misleading .jpg extension");
+        assert_eq!((decoded.width(), decoded.height()), (2, 3));
+    }
 }
